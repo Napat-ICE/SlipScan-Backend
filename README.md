@@ -131,3 +131,19 @@ SlipScan-Backend/
 
 - [SlipScan-OCR](https://github.com/Napat-ICE/SlipScan-OCR) — OCR microservice
 - [SlipScan-Frontend](https://github.com/Napat-ICE/SlipScan-Frontend) — Web interface
+
+## Changelog
+
+### v1.1.0 — Bug Fixes (E2E Testing)
+- **fix:** `raw_ocr` JSON parse error on duplicate slip response — psycopg2 returns JSON columns as `dict`, not `str`. Fixed with `isinstance` check before calling `json.loads()`
+- **feat:** `extensions.py` — centralized Flask extensions to prevent circular imports between `app.py` and `routes/slips.py`
+- **feat:** Rate limiting with `Flask-Limiter` (20/min upload, 5/min batch)
+- **feat:** Structured request logging via Python `logging` module (timestamp, method, path, status, duration)
+- **fix:** `.env` file corrected — `OCR_SERVICE_URL` and `THUNDER_API_KEY` were concatenated on same line
+
+### v1.0.0 — Initial Release
+- Flask REST API with JWT authentication
+- Single and batch slip upload with OCR integration
+- Duplicate slip detection by file hash (early check before API calls)
+- PostgreSQL via Supabase
+- Dashboard statistics and CSV export
