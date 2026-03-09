@@ -50,6 +50,35 @@ def upload():
     file_hash  = hashlib.sha256(file_bytes).hexdigest()
     file.seek(0)
 
+    # Check duplicate BY HASH early
+    is_dup, dup_slip_id = _check_duplicate(file_hash, user_id)
+    
+    if is_dup:
+        # It's a duplicate. We don't need to save the file permanently or call OCR/Thunder.
+        # Fetch existing slip data to return it
+        existing_slip = _get_slip_by_id(dup_slip_id, user_id)
+        if existing_slip:
+            return jsonify({
+                "success":  True,
+                "slip_id":  dup_slip_id,
+                "is_duplicate": True,
+                "duplicate_of": dup_slip_id,
+                "data": {
+                    "sender_name":   existing_slip.get("sender_name"),
+                    "bank_name":     existing_slip.get("bank_name"),
+                    "amount":        existing_slip.get("amount"),
+                    "slip_date":     str(existing_slip.get("slip_date")) if existing_slip.get("slip_date") else None,
+                    "slip_time":     str(existing_slip.get("slip_time")) if existing_slip.get("slip_time") else None,
+                    "ref_no":        existing_slip.get("ref_no"),
+                    "receiver_name": existing_slip.get("receiver_name"),
+                    "receiver_acct": existing_slip.get("receiver_acct"),
+                    "is_fake":       existing_slip.get("is_fake", False),
+                },
+                "raw_ocr":       json.loads(existing_slip.get("raw_ocr")) if existing_slip.get("raw_ocr") else None,
+                "warnings":      [f"⚠️ สลิปซ้ำกับรายการ #{dup_slip_id}"],
+                "notifications": [{"type": "warning", "message": f"สลิปซ้ำกับรายการ #{dup_slip_id}"}],
+            }), 200
+
     # Save file temporarily for OCR
     filename = f"slip_{uuid.uuid4().hex}{Path(file.filename).suffix.lower()}"
     dest     = UPLOAD_DIR / filename
@@ -61,11 +90,17 @@ def upload():
         warnings.append("OCR service unavailable or failed")
         ocr_data = {}
 
-    is_dup, dup_slip_id = _check_duplicate(
-        file_hash, user_id, 
-        ref_no=ocr_data.get('ref_no'), 
-        bank_name=ocr_data.get('bank_name')
-    )
+    # Check duplicate again by Bank & Ref No (if OCR extracted them)
+    is_dup_by_ref, dup_slip_id_by_ref = False, None
+    if not is_dup:
+         is_dup_by_ref, dup_slip_id_by_ref = _check_duplicate(
+            None, user_id, 
+            ref_no=ocr_data.get('ref_no'), 
+            bank_name=ocr_data.get('bank_name')
+        )
+    
+    final_is_dup = is_dup or is_dup_by_ref
+    final_dup_id = dup_slip_id or dup_slip_id_by_ref
 
     # ตรวจสอบสลิปปลอมผ่าน Thunder Solution (เทียบกับข้อมูล OCR)
     is_fake, fake_reason = _call_thunder_verify(
@@ -77,10 +112,10 @@ def upload():
         ocr_data["is_fake"] = True
         warnings.append(f"สลิปปลอม/ตรวจสอบไม่ผ่าน: {fake_reason}")
 
-    if is_dup:
-        warnings.append(f"⚠️ สลิปซ้ำกับรายการ #{dup_slip_id}")
+    if final_is_dup:
+        warnings.append(f"⚠️ สลิปซ้ำกับรายการ #{final_dup_id}")
 
-    slip_id = _save_slip(user_id, f"uploads/{filename}", ocr_data, is_dup, file_hash)
+    slip_id = _save_slip(user_id, f"uploads/{filename}", ocr_data, final_is_dup, file_hash)
 
     # Notification: แจ้งเตือนถ้าสลิปปลอมหรืออ่านข้อมูลไม่ครบ
     notifications = []
@@ -89,14 +124,14 @@ def upload():
     missing = [f for f in ["amount", "bank_name", "slip_date"] if not ocr_data.get(f)]
     if missing:
         notifications.append({"type": "warning", "message": f"อ่านข้อมูลไม่ครบ: {', '.join(missing)}"})
-    if is_dup:
-        notifications.append({"type": "warning", "message": f"สลิปซ้ำกับรายการ #{dup_slip_id}"})
+    if final_is_dup:
+        notifications.append({"type": "warning", "message": f"สลิปซ้ำกับรายการ #{final_dup_id}"})
 
     return jsonify({
         "success":  True,
         "slip_id":  slip_id,
-        "is_duplicate": is_dup,
-        "duplicate_of": dup_slip_id,
+        "is_duplicate": final_is_dup,
+        "duplicate_of": final_dup_id,
         "data": {
             "sender_name":   ocr_data.get("sender_name"),
             "bank_name":     ocr_data.get("bank_name"),
@@ -142,6 +177,35 @@ def upload_batch():
         file_hash  = hashlib.sha256(file_bytes).hexdigest()
         file.seek(0)
 
+        # Check duplicate BY HASH early
+        is_dup, dup_slip_id = _check_duplicate(file_hash, user_id)
+
+        if is_dup:
+            existing_slip = _get_slip_by_id(dup_slip_id, user_id)
+            if existing_slip:
+                results.append({
+                    "index":    i,
+                    "success":  True,
+                    "slip_id":  dup_slip_id,
+                    "filename": file.filename,
+                    "is_duplicate": True,
+                    "duplicate_of": dup_slip_id,
+                    "data": {
+                        "sender_name":   existing_slip.get("sender_name"),
+                        "bank_name":     existing_slip.get("bank_name"),
+                        "amount":        existing_slip.get("amount"),
+                        "slip_date":     str(existing_slip.get("slip_date")) if existing_slip.get("slip_date") else None,
+                        "slip_time":     str(existing_slip.get("slip_time")) if existing_slip.get("slip_time") else None,
+                        "ref_no":        existing_slip.get("ref_no"),
+                        "receiver_name": existing_slip.get("receiver_name"),
+                        "receiver_acct": existing_slip.get("receiver_acct"),
+                        "is_fake":       existing_slip.get("is_fake", False),
+                    },
+                    "warnings": [f"⚠️ สลิปซ้ำกับรายการ #{dup_slip_id}"]
+                })
+                success_count += 1
+                continue
+
         filename = f"slip_{uuid.uuid4().hex}{Path(file.filename).suffix.lower()}"
         dest     = UPLOAD_DIR / filename
         with open(str(dest), "wb") as f:
@@ -152,11 +216,16 @@ def upload_batch():
             warnings.append("OCR service unavailable")
             ocr_data = {}
 
-        is_dup, dup_slip_id = _check_duplicate(
-            file_hash, user_id, 
-            ref_no=ocr_data.get('ref_no'), 
-            bank_name=ocr_data.get('bank_name')
-        )
+        is_dup_by_ref, dup_slip_id_by_ref = False, None
+        if not is_dup:
+            is_dup_by_ref, dup_slip_id_by_ref = _check_duplicate(
+                None, user_id, 
+                ref_no=ocr_data.get('ref_no'), 
+                bank_name=ocr_data.get('bank_name')
+            )
+        
+        final_is_dup = is_dup or is_dup_by_ref
+        final_dup_id = dup_slip_id or dup_slip_id_by_ref
 
         # ตรวจสอบสลิปปลอมผ่าน Thunder Solution (เทียบกับข้อมูล OCR)
         is_fake_slip, fake_reason = _call_thunder_verify(
@@ -168,17 +237,17 @@ def upload_batch():
             ocr_data["is_fake"] = True
             warnings.append(f"สลิปปลอม/ตรวจสอบไม่ผ่าน: {fake_reason}")
 
-        if is_dup:
-            warnings.append(f"⚠️ สลิปซ้ำกับรายการ #{dup_slip_id}")
+        if final_is_dup:
+            warnings.append(f"⚠️ สลิปซ้ำกับรายการ #{final_dup_id}")
 
-        slip_id = _save_slip(user_id, f"uploads/{filename}", ocr_data, is_dup, file_hash)
+        slip_id = _save_slip(user_id, f"uploads/{filename}", ocr_data, final_is_dup, file_hash)
         results.append({
             "index":    i,
             "success":  True,
             "slip_id":  slip_id,
             "filename": file.filename,
-            "is_duplicate": is_dup,
-            "duplicate_of": dup_slip_id,
+            "is_duplicate": final_is_dup,
+            "duplicate_of": final_dup_id,
             "data": {
                 "sender_name":   ocr_data.get("sender_name"),
                 "bank_name":     ocr_data.get("bank_name"),
@@ -633,22 +702,23 @@ def _call_thunder_verify(file_path: str, ocr_amount: float | None = None, ocr_re
         return True, str(e)
 
 
-def _check_duplicate(file_hash: str, user_id: int, ref_no: str = None, bank_name: str = None) -> tuple[bool, int | None]:
+def _check_duplicate(file_hash: str | None, user_id: int, ref_no: str = None, bank_name: str = None) -> tuple[bool, int | None]:
     """Return (is_duplicate, original_slip_id)."""
     conn = get_db()
     try:
         with conn.cursor() as cur:
             # Check by hash first
-            cur.execute(
-                """SELECT sh.slip_id FROM slip_hashes sh
-                   JOIN slips s ON s.id = sh.slip_id
-                   WHERE sh.hash = %s AND s.user_id = %s
-                   LIMIT 1""",
-                (file_hash, user_id),
-            )
-            row = cur.fetchone()
-            if row:
-                return True, row["slip_id"]
+            if file_hash:
+                cur.execute(
+                    """SELECT sh.slip_id FROM slip_hashes sh
+                       JOIN slips s ON s.id = sh.slip_id
+                       WHERE sh.hash = %s AND s.user_id = %s
+                       LIMIT 1""",
+                    (file_hash, user_id),
+                )
+                row = cur.fetchone()
+                if row:
+                    return True, row["slip_id"]
             
             # Check by ref_no and bank_name
             if ref_no and bank_name:
@@ -665,6 +735,18 @@ def _check_duplicate(file_hash: str, user_id: int, ref_no: str = None, bank_name
     except Exception:
         pass
     return False, None
+
+def _get_slip_by_id(slip_id: int, user_id: int):
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM slips WHERE id = %s AND user_id = %s", (slip_id, user_id))
+            row = cur.fetchone()
+            if row:
+                return dict(row)
+    except Exception:
+        pass
+    return None
 
 
 def _save_slip(user_id: int, image_path: str, data: dict,
