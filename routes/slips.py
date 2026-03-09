@@ -11,9 +11,13 @@ import hashlib
 import requests
 from pathlib import Path
 from datetime import datetime, timedelta
+import logging
 from flask import Blueprint, request, jsonify, send_from_directory, Response
 from config import get_db
 from auth_guard import require_auth
+from extensions import limiter
+
+logger = logging.getLogger("slipscan.slips")
 
 slips_bp = Blueprint("slips", __name__, url_prefix="/api/slips")
 
@@ -34,6 +38,7 @@ def serve_upload(filename):
 # ── POST /api/slips/upload ───────────────────────────────────────────────────
 @slips_bp.post("/upload")
 @require_auth
+@limiter.limit("20 per minute")
 def upload():
     user_id = int(request.current_user["sub"])
 
@@ -152,6 +157,7 @@ def upload():
 # ── POST /api/slips/upload-batch ─────────────────────────────────────────────
 @slips_bp.post("/upload-batch")
 @require_auth
+@limiter.limit("5 per minute")
 def upload_batch():
     user_id = int(request.current_user["sub"])
     files   = request.files.getlist("files")
