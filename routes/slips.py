@@ -79,7 +79,7 @@ def upload():
                     "receiver_acct": existing_slip.get("receiver_acct"),
                     "is_fake":       existing_slip.get("is_fake", False),
                 },
-                "raw_ocr":       existing_slip.get("raw_ocr") if isinstance(existing_slip.get("raw_ocr"), (dict, list)) else (json.loads(existing_slip.get("raw_ocr")) if existing_slip.get("raw_ocr") else None),
+                "raw_ocr":       existing_slip.get("raw_ocr"),
                 "warnings":      [f"⚠️ สลิปซ้ำกับรายการ #{dup_slip_id}"],
                 "notifications": [{"type": "warning", "message": f"สลิปซ้ำกับรายการ #{dup_slip_id}"}],
             }), 200
