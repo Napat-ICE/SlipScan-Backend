@@ -580,14 +580,15 @@ def dashboard():
         # ── Weekly summary (last 8 weeks) ──
         cur.execute(
             """SELECT
-                DATE_TRUNC('week', created_at)::date::text AS week_start,
-                COUNT(*)                                   AS slip_count,
-                COALESCE(SUM(amount), 0)                   AS total_amount
+                DATE_TRUNC('week', slip_date)::date::text AS week_start,
+                COUNT(*)                                  AS slip_count,
+                COALESCE(SUM(amount), 0)                  AS total_amount
                FROM slips
                WHERE user_id = %s
-                 AND created_at >= NOW() - INTERVAL '8 weeks'
+                 AND slip_date >= CURRENT_DATE - INTERVAL '8 weeks'
+                 AND slip_date IS NOT NULL
                  AND NOT is_fake AND NOT is_duplicate
-               GROUP BY DATE_TRUNC('week', created_at)
+               GROUP BY DATE_TRUNC('week', slip_date)
                ORDER BY week_start""",
             (user_id,),
         )
@@ -596,14 +597,15 @@ def dashboard():
         # ── Monthly summary (last 12 months) ──
         cur.execute(
             """SELECT
-                TO_CHAR(DATE_TRUNC('month', created_at), 'YYYY-MM') AS month,
-                COUNT(*)                                            AS slip_count,
-                COALESCE(SUM(amount), 0)                            AS total_amount
+                TO_CHAR(DATE_TRUNC('month', slip_date), 'YYYY-MM') AS month,
+                COUNT(*)                                           AS slip_count,
+                COALESCE(SUM(amount), 0)                           AS total_amount
                FROM slips
                WHERE user_id = %s
-                 AND created_at >= NOW() - INTERVAL '12 months'
+                 AND slip_date >= CURRENT_DATE - INTERVAL '12 months'
+                 AND slip_date IS NOT NULL
                  AND NOT is_fake AND NOT is_duplicate
-               GROUP BY DATE_TRUNC('month', created_at)
+               GROUP BY DATE_TRUNC('month', slip_date)
                ORDER BY month""",
             (user_id,),
         )
@@ -750,13 +752,21 @@ def _call_thunder_verify(file_path: str, ocr_amount: float | None = None, ocr_re
 
 
 def _normalize_ref(ref: str) -> str:
-    """Normalize ref string for comparison: lowercase + O→0."""
+    """Normalize ref string for comparison: lowercase + ambiguous char translation."""
     if not ref:
         return ''
     import re as _re
+    # ลบตัวอักษรพิเศษต่างๆ ออก
     cleaned = _re.sub(r'[^A-Za-z0-9]', '', ref).lower()
-    # Replace 'o' with '0' everywhere (common OCR confusion)
+    
+    # แทนที่ตัวอักษรที่มักจะทำให้เกิดปัญหา OCR / API เทียบกันไม่ผ่าน
+    # ถือว่า o, 0, O เป็นตัวเดียวกันเวลาเทียบความคล้าย
     cleaned = cleaned.replace('o', '0')
+    # ถือว่า i, l, I, t, 1 เป็นตัวเดียวกัน
+    cleaned = cleaned.replace('i', '1')
+    cleaned = cleaned.replace('l', '1')
+    cleaned = cleaned.replace('t', '1')
+    
     return cleaned
 
 
