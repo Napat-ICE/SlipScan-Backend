@@ -79,7 +79,7 @@ docker run -p 8000:8000 --env-file .env slipscan-backend
 
 # รันพร้อม docker-compose (แนะนำ)
 cd ..
-docker-compose up -d
+docker-compose up
 ```
 
 ### 4. Run Locally (Development)

@@ -29,6 +29,23 @@ MAX_BATCH      = 20
 OCR_URL        = os.environ.get("OCR_SERVICE_URL", "http://localhost:5000/ocr")
 
 
+def _safe_parse_raw_ocr(value):
+    """Safely parse raw_ocr from DB — never raises."""
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        try:
+            return json.loads(s)
+        except (json.JSONDecodeError, ValueError):
+            return s  # return raw string if not valid JSON
+    return None
+
+
 # ── GET /api/slips/uploads/<filename>  (serve uploaded images) ───────────────
 @slips_bp.get("/uploads/<path:filename>")
 def serve_upload(filename):
@@ -59,30 +76,54 @@ def upload():
     is_dup, dup_slip_id = _check_duplicate(file_hash, user_id)
     
     if is_dup:
-        # It's a duplicate. We don't need to save the file permanently or call OCR/Thunder.
-        # Fetch existing slip data to return it
+        # It's a duplicate -- still save to DB so it appears in history
         existing_slip = _get_slip_by_id(dup_slip_id, user_id)
+
+        # Save the duplicate image
+        filename = f"slip_{uuid.uuid4().hex}{Path(file.filename).suffix.lower()}"
+        dest     = UPLOAD_DIR / filename
+        with open(str(dest), "wb") as f:
+            f.write(file_bytes)
+
+        # Build data from existing slip for the new record
+        dup_data = {}
         if existing_slip:
-            return jsonify({
-                "success":  True,
-                "slip_id":  dup_slip_id,
-                "is_duplicate": True,
-                "duplicate_of": dup_slip_id,
-                "data": {
-                    "sender_name":   existing_slip.get("sender_name"),
-                    "bank_name":     existing_slip.get("bank_name"),
-                    "amount":        existing_slip.get("amount"),
-                    "slip_date":     str(existing_slip.get("slip_date")) if existing_slip.get("slip_date") else None,
-                    "slip_time":     str(existing_slip.get("slip_time")) if existing_slip.get("slip_time") else None,
-                    "ref_no":        existing_slip.get("ref_no"),
-                    "receiver_name": existing_slip.get("receiver_name"),
-                    "receiver_acct": existing_slip.get("receiver_acct"),
-                    "is_fake":       existing_slip.get("is_fake", False),
-                },
-                "raw_ocr":       existing_slip.get("raw_ocr") if isinstance(existing_slip.get("raw_ocr"), (dict, list)) else (json.loads(existing_slip.get("raw_ocr")) if existing_slip.get("raw_ocr") else None),
-                "warnings":      [f"⚠️ สลิปซ้ำกับรายการ #{dup_slip_id}"],
-                "notifications": [{"type": "warning", "message": f"สลิปซ้ำกับรายการ #{dup_slip_id}"}],
-            }), 200
+            dup_data = {
+                "sender_name":      existing_slip.get("sender_name"),
+                "bank_name":        existing_slip.get("bank_name"),
+                "amount":           existing_slip.get("amount"),
+                "slip_date":        str(existing_slip.get("slip_date")) if existing_slip.get("slip_date") else None,
+                "slip_time":        str(existing_slip.get("slip_time")) if existing_slip.get("slip_time") else None,
+                "ref_no":           existing_slip.get("ref_no"),
+                "receiver_name":    existing_slip.get("receiver_name"),
+                "receiver_account": existing_slip.get("receiver_acct"),
+                "raw_ocr":          existing_slip.get("raw_ocr"),
+            }
+
+        # Save as duplicate slip in DB
+        new_slip_id = _save_slip(user_id, f"uploads/{filename}", dup_data, is_duplicate=True, file_hash=None)
+
+        resp_data = {
+            "success":  True,
+            "slip_id":  new_slip_id,
+            "is_duplicate": True,
+            "duplicate_of": dup_slip_id,
+            "data": {
+                "sender_name":   dup_data.get("sender_name"),
+                "bank_name":     dup_data.get("bank_name"),
+                "amount":        dup_data.get("amount"),
+                "slip_date":     dup_data.get("slip_date"),
+                "slip_time":     dup_data.get("slip_time"),
+                "ref_no":        dup_data.get("ref_no"),
+                "receiver_name": dup_data.get("receiver_name"),
+                "receiver_acct": dup_data.get("receiver_account"),
+                "is_fake":       existing_slip.get("is_fake", False) if existing_slip else False,
+            },
+            "raw_ocr":       _safe_parse_raw_ocr(dup_data.get("raw_ocr")),
+            "warnings":      [f"\u26a0\ufe0f \u0e2a\u0e25\u0e34\u0e1b\u0e0b\u0e49\u0e33\u0e01\u0e31\u0e1a\u0e23\u0e32\u0e22\u0e01\u0e32\u0e23 #{dup_slip_id}"],
+            "notifications": [{"type": "warning", "message": f"\u0e2a\u0e25\u0e34\u0e1b\u0e0b\u0e49\u0e33\u0e01\u0e31\u0e1a\u0e23\u0e32\u0e22\u0e01\u0e32\u0e23 #{dup_slip_id}"}],
+        }
+        return jsonify(resp_data), 200
 
     # Save file temporarily for OCR
     filename = f"slip_{uuid.uuid4().hex}{Path(file.filename).suffix.lower()}"
@@ -207,6 +248,7 @@ def upload_batch():
                         "receiver_acct": existing_slip.get("receiver_acct"),
                         "is_fake":       existing_slip.get("is_fake", False),
                     },
+                    "raw_ocr":       _safe_parse_raw_ocr(existing_slip.get("raw_ocr")),
                     "warnings": [f"⚠️ สลิปซ้ำกับรายการ #{dup_slip_id}"]
                 })
                 success_count += 1
@@ -687,15 +729,14 @@ def _call_thunder_verify(file_path: str, ocr_amount: float | None = None, ocr_re
         # 2. เทียบรหัสอ้างอิง (Ref No / TransRef) อย่างน้อยบางส่วน
         if ocr_ref:
             # ดึง transRef หรือ ref1 หรือ ref2 มาเทียบ (API บางธนาคารออก transRef บางที่ออก ref1)
-            api_trans_ref = str(api_data.get('transRef') or '').lower()
-            api_ref1 = str(api_data.get('ref1') or '').lower()
-            api_ref2 = str(api_data.get('ref2') or '').lower()
+            api_trans_ref = _normalize_ref(str(api_data.get('transRef') or ''))
+            api_ref1 = _normalize_ref(str(api_data.get('ref1') or ''))
+            api_ref2 = _normalize_ref(str(api_data.get('ref2') or ''))
             
-            ocr_ref_lower = str(ocr_ref).lower()
+            ocr_ref_norm = _normalize_ref(str(ocr_ref))
             
             # เช็คว่า ocr_ref เป็นส่วนหนึ่งของ api_ref ต่างๆ หรือไม่ 
-            # (ป้องกันบางที OCR อ่านมาได้แค่ครึ่งเดียว แต่ถ้าตัวอักษรผิดเพี้ยนเลยคือการปลอมแปลง)
-            if not (ocr_ref_lower in api_trans_ref or ocr_ref_lower in api_ref1 or ocr_ref_lower in api_ref2):
+            if not (ocr_ref_norm in api_trans_ref or ocr_ref_norm in api_ref1 or ocr_ref_norm in api_ref2):
                 # ถ้าไม่ตรงเลย
                 return True, f"รหัสอ้างอิงไม่ตรงกับข้อมูลจริง (ภาพ: {ocr_ref})"
 
@@ -706,6 +747,17 @@ def _call_thunder_verify(file_path: str, ocr_amount: float | None = None, ocr_re
         return False, f"Thunder API connection error: {str(e)}"
     except Exception as e:
         return True, str(e)
+
+
+def _normalize_ref(ref: str) -> str:
+    """Normalize ref string for comparison: lowercase + O→0."""
+    if not ref:
+        return ''
+    import re as _re
+    cleaned = _re.sub(r'[^A-Za-z0-9]', '', ref).lower()
+    # Replace 'o' with '0' everywhere (common OCR confusion)
+    cleaned = cleaned.replace('o', '0')
+    return cleaned
 
 
 def _check_duplicate(file_hash: str | None, user_id: int, ref_no: str = None, bank_name: str = None) -> tuple[bool, int | None]:
@@ -726,13 +778,13 @@ def _check_duplicate(file_hash: str | None, user_id: int, ref_no: str = None, ba
                 if row:
                     return True, row["slip_id"]
             
-            # Check by ref_no and bank_name
-            if ref_no and bank_name:
+            # Check by ref_no alone (same ref_no for same user = duplicate)
+            if ref_no:
                 cur.execute(
                     """SELECT id FROM slips
-                       WHERE ref_no = %s AND bank_name = %s AND user_id = %s
+                       WHERE ref_no = %s AND user_id = %s
                        LIMIT 1""",
-                    (ref_no, bank_name, user_id),
+                    (ref_no, user_id),
                 )
                 row2 = cur.fetchone()
                 if row2:
