@@ -402,7 +402,8 @@ def list_all():
 
         cur.execute(
             f"""SELECT id, image_path, sender_name, bank_name, amount, slip_date, slip_time,
-                      ref_no, receiver_name, receiver_acct, is_fake, is_duplicate, created_at
+                      ref_no, receiver_name, receiver_acct, is_fake, is_duplicate, created_at,
+                      ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at ASC) as user_sequence
                FROM slips WHERE {where}
                ORDER BY created_at DESC
                LIMIT %s OFFSET %s""",
@@ -614,7 +615,8 @@ def dashboard():
         # ── Recent slips (last 10) ──
         cur.execute(
             """SELECT id, sender_name, bank_name, amount, slip_date, ref_no,
-                      is_fake, is_duplicate, created_at
+                      is_fake, is_duplicate, created_at,
+                      ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at ASC) as user_sequence
                FROM slips WHERE user_id = %s
                ORDER BY created_at DESC LIMIT 10""",
             (user_id,),
@@ -687,9 +689,10 @@ def _call_thunder_verify(file_path: str, ocr_amount: float | None = None, ocr_re
     Returns: (is_fake, fake_reason)
     """
     # Get API key from environment variables
-    api_key = os.environ.get("THUNDER_API_KEY")
+    api_key = os.environ.get("THUNDER_API_KEY") or os.environ.get("Thunder_key")
     if not api_key:
-        return False, "Server configuration error: THUNDER_API_KEY is not set."
+        # ถ้าไม่มี API key ถือว่าไม่สามารถตรวจสอบได้ - ไม่ใช่ return False (ไม่ใช่ปลอม)
+        return True, "ไม่สามารถตรวจสอบสลิปได้: ไม่ได้ตั้งค่า THUNDER_API_KEY"
 
     try:
         with open(file_path, "rb") as image_file:
@@ -697,7 +700,6 @@ def _call_thunder_verify(file_path: str, ocr_amount: float | None = None, ocr_re
                 'https://api.thunder.in.th/v2/verify/bank',
                 headers={
                     'Authorization': f'Bearer {api_key}'
-                    # ยกเลิก Content-Type: application/json เพราะ requests จะสร้าง multipart/form-data ให้อัตโนมัติ
                 },
                 data={
                     'checkDuplicate': 'true'
@@ -746,7 +748,8 @@ def _call_thunder_verify(file_path: str, ocr_amount: float | None = None, ocr_re
         return False, None
 
     except requests.exceptions.RequestException as e:
-        return False, f"Thunder API connection error: {str(e)}"
+        # API connection error - ถือว่าไม่สามารถตรวจสอบได้ (ไม่ใช่ return False)
+        return True, f"ไม่สามารถเชื่อมต่อ Thunder API: {str(e)}"
     except Exception as e:
         return True, str(e)
 

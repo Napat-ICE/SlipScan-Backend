@@ -41,6 +41,26 @@ SlipScan-Backend (port 8000)
 | GET | `/api/slips/dashboard` | ข้อมูลสถิติ Dashboard |
 | GET | `/health` | Health check |
 
+## Quick Start for Teammates (หลัง Pull)
+
+```bash
+# 1. Clone + เข้าโฟลเดอร์
+git clone https://github.com/Napat-ICE/SlipScan-Backend.git
+cd SlipScan-Backend
+
+# 2. สร้างไฟล์ .env (ถามเพื่อนที่มี API key หรือดูในกลุ่ม)
+cp .env.example .env
+# แก้ไข .env ใส่ค่าจริง (ดูรายละเอียดด้านล่าง)
+
+# 3. Run with Docker (แนะนำ)
+docker build -t slipscan-backend .
+docker run -p 8000:8000 --env-file .env slipscan-backend
+
+# หรือ 4. Run locally (ถ้าไม่ใช้ Docker)
+pip install -r requirements.txt
+python app.py
+```
+
 ## Getting Started
 
 ### 1. Clone
